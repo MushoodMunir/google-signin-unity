@@ -26,6 +26,7 @@ import androidx.credentials.CredentialManagerCallback;
 import androidx.credentials.GetCredentialRequest;
 import androidx.credentials.GetCredentialResponse;
 import androidx.credentials.exceptions.ClearCredentialException;
+import androidx.credentials.exceptions.GetCredentialCancellationException;
 import androidx.credentials.exceptions.GetCredentialException;
 
 import com.google.android.gms.auth.api.identity.AuthorizationRequest;
@@ -42,7 +43,6 @@ import com.google.android.gms.tasks.Task;
 import com.google.android.gms.tasks.TaskCompletionSource;
 import com.google.android.gms.tasks.TaskExecutors;
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption;
-import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption;
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential;
 import com.unity3d.player.UnityPlayer;
 
@@ -51,6 +51,8 @@ import org.jetbrains.annotations.NotNull;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Helper class used by the native C++ code to interact with Google Sign-in API.
@@ -72,6 +74,8 @@ public class GoogleSignInHelper {
   private static CancellationSignal cancellationSignal;
   private static Task<AuthorizationResult> task;
   private static Function<Boolean, Task<AuthorizationResult>> signInFunction;
+  private static final ExecutorService credentialCallbackExecutor =
+        Executors.newSingleThreadExecutor();
   public static boolean isPending() {
     return task != null && !task.isComplete() && !task.isCanceled();
   }
@@ -90,11 +94,22 @@ public class GoogleSignInHelper {
       return CommonStatusCodes.SUCCESS;
 
     Exception e = task.getException();
-    if(e != null)
-    {
-      logError("onFailure with INTERNAL_ERROR : " + e.getClass().toString() + " " + e.getMessage());
-      return CommonStatusCodes.INTERNAL_ERROR;
-    }
+if(e != null)
+{
+  if (e instanceof GetCredentialCancellationException) {
+    logDebug("Google Sign-In cancelled by user.");
+    return CommonStatusCodes.CANCELED;
+  }
+
+  logError(
+      "onFailure with INTERNAL_ERROR : "
+          + e.getClass().toString()
+          + " "
+          + String.valueOf(e.getMessage())
+  );
+
+  return CommonStatusCodes.INTERNAL_ERROR;
+}
 
     return CommonStatusCodes.ERROR;
   }
@@ -165,9 +180,22 @@ public class GoogleSignInHelper {
           getCredentialRequestBuilder.addCredentialOption(getGoogleIdOptionBuilder.build());
         }
         else {
-          GetSignInWithGoogleOption.Builder getSignInWithGoogleOptionBuilder = new GetSignInWithGoogleOption.Builder(webClientId);
-          getCredentialRequestBuilder.addCredentialOption(getSignInWithGoogleOptionBuilder.build());
-        }
+  GetGoogleIdOption.Builder getGoogleIdOptionBuilder =
+          new GetGoogleIdOption.Builder()
+                  .setFilterByAuthorizedAccounts(false)
+                  .setAutoSelectEnabled(false);
+
+  if (!Strings.isEmptyOrWhitespace(webClientId)) {
+    getGoogleIdOptionBuilder.setServerClientId(webClientId);
+  }
+
+  // Interactive login must be allowed to show account-selection UI.
+  getCredentialRequestBuilder.setPreferImmediatelyAvailableCredentials(false);
+
+  getCredentialRequestBuilder.addCredentialOption(
+          getGoogleIdOptionBuilder.build()
+  );
+}
 
         TaskCompletionSource<GetCredentialResponse> source = new TaskCompletionSource<>();
 
@@ -257,23 +285,46 @@ public class GoogleSignInHelper {
   }
 
   public static void signOut() {
-    cancel();
+  cancel();
 
-    CredentialManager.create(UnityPlayer.currentActivity).clearCredentialStateAsync(new ClearCredentialStateRequest(),
-            new CancellationSignal(),
-            TaskExecutors.MAIN_THREAD,
-            new CredentialManagerCallback<Void, ClearCredentialException>() {
-              @Override
-              public void onResult(Void unused) {
-                logInfo("signOut");
-              }
+  try {
+    CredentialManager.create(UnityPlayer.currentActivity)
+            .clearCredentialStateAsync(
+                    new ClearCredentialStateRequest(),
+                    new CancellationSignal(),
+                    credentialCallbackExecutor,
+                    new CredentialManagerCallback<Void, ClearCredentialException>() {
 
-              @Override
-              public void onError(@NonNull ClearCredentialException e) {
-                logError(e.getMessage());
-              }
-            });
+                      @Override
+                      public void onResult(Void unused) {
+                        logInfo("Google credential state cleared successfully.");
+                      }
+
+                      @Override
+                      public void onError(@NonNull ClearCredentialException e) {
+                        String errorMessage = e.getMessage();
+
+                        Log.e(
+                                TAG,
+                                "Failed to clear Google credential state. Type="
+                                        + e.getClass().getSimpleName()
+                                        + ", Message="
+                                        + (errorMessage != null
+                                            ? errorMessage
+                                            : "<no error message>")
+                        );
+                      }
+                    }
+            );
   }
+  catch (Exception e) {
+    Log.e(
+            TAG,
+            "Failed to start Google credential state clear.",
+            e
+    );
+  }
+}
 
   static final String TAG = GoogleSignInHelper.class.getSimpleName();
 
@@ -284,8 +335,13 @@ public class GoogleSignInHelper {
   }
 
   public static void logError(String msg) {
-    Log.e(TAG, msg);
-  }
+  Log.e(
+          TAG,
+          msg != null
+                  ? msg
+                  : "Unknown Google Sign-In error"
+  );
+}
 
   public static void logDebug(String msg) {
     if (loggingEnabled) {
