@@ -43,9 +43,10 @@ import com.google.android.gms.tasks.Task;
 import com.google.android.gms.tasks.TaskCompletionSource;
 import com.google.android.gms.tasks.TaskExecutors;
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption;
+import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption;
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential;
 import com.unity3d.player.UnityPlayer;
-
+import androidx.credentials.exceptions.NoCredentialException;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
@@ -94,21 +95,27 @@ public class GoogleSignInHelper {
       return CommonStatusCodes.SUCCESS;
 
     Exception e = task.getException();
+
 if(e != null)
 {
-  if (e instanceof GetCredentialCancellationException) {
-    logDebug("Google Sign-In cancelled by user.");
-    return CommonStatusCodes.CANCELED;
-  }
+    if (e instanceof GetCredentialCancellationException) {
+        logDebug("Google Sign-In cancelled by user.");
+        return CommonStatusCodes.CANCELED;
+    }
 
-  logError(
-      "onFailure with INTERNAL_ERROR : "
-          + e.getClass().toString()
-          + " "
-          + String.valueOf(e.getMessage())
-  );
+    if (e instanceof NoCredentialException) {
+        logDebug("No Google credential available.");
+        return CommonStatusCodes.SIGN_IN_REQUIRED;
+    }
 
-  return CommonStatusCodes.INTERNAL_ERROR;
+    logError(
+        "onFailure with INTERNAL_ERROR : "
+        + e.getClass().toString()
+        + " "
+        + String.valueOf(e.getMessage())
+    );
+
+    return CommonStatusCodes.INTERNAL_ERROR;
 }
 
     return CommonStatusCodes.ERROR;
@@ -180,20 +187,11 @@ if(e != null)
           getCredentialRequestBuilder.addCredentialOption(getGoogleIdOptionBuilder.build());
         }
         else {
-  GetGoogleIdOption.Builder getGoogleIdOptionBuilder =
-          new GetGoogleIdOption.Builder()
-                  .setFilterByAuthorizedAccounts(false)
-                  .setAutoSelectEnabled(false);
-
-  if (!Strings.isEmptyOrWhitespace(webClientId)) {
-    getGoogleIdOptionBuilder.setServerClientId(webClientId);
-  }
-
-  // Interactive login must be allowed to show account-selection UI.
-  getCredentialRequestBuilder.setPreferImmediatelyAvailableCredentials(false);
+  GetSignInWithGoogleOption.Builder getSignInWithGoogleOptionBuilder =
+          new GetSignInWithGoogleOption.Builder(webClientId);
 
   getCredentialRequestBuilder.addCredentialOption(
-          getGoogleIdOptionBuilder.build()
+          getSignInWithGoogleOptionBuilder.build()
   );
 }
 
